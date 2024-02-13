@@ -3,7 +3,7 @@
 // List all group member's name:
 /*
  */
-// username of iLab:
+// username of iLab: 
 // iLab Server:
 
 
@@ -13,10 +13,19 @@
 #define STACK_SIZE 16 * 1024
 #define QUANTUM 10 * 1000
 
+//Initializing the queue:
+typedef struct node {
+    tcb* TCB;        
+    struct Queue* next; 
+} TCB;
+
+typedef struct Queue {
+    TCB* head;        
+    TCB* tail;    
+} Scheduler;
 
 // INITIALIZE ALL YOUR OTHER VARIABLES HERE
 int init_scheduler_done = 0;
-
 
 
 /* create a new thread */
