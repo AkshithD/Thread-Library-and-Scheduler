@@ -78,6 +78,11 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     // after everything is set, push this thread into run queue and
     // - make it ready for the execution.
 
+    if (init_scheduler_done == 0) {
+        initialize_scheduler();
+        init_scheduler_done = 1;
+    }
+
     Node *new_thread = (Node *)malloc(sizeof(Node));
     if (new_thread == NULL)
     {
@@ -112,7 +117,13 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
 
     new_thread->next = NULL;
     // Add the new thread to the queue
-
+    if (ready_queue->ready_queue_head == NULL) {
+        ready_queue->ready_queue_head = new_thread;
+        ready_queue->ready_queue_tail = new_thread;
+    } else {
+        ready_queue->ready_queue_tail->next = new_thread;
+        ready_queue->ready_queue_tail = new_thread;
+    }
     return 0;
 }
 
