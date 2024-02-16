@@ -24,6 +24,14 @@ typedef struct Queue {
     TCB* tail;    
 } Scheduler;
 
+typedef enum {
+    READY,
+    RUNNING,
+    BLOCKED,
+    TERMINATED
+} ThreadState;
+
+
 // INITIALIZE ALL YOUR OTHER VARIABLES HERE
 int init_scheduler_done = 0;
 
@@ -37,6 +45,41 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     // - allocate space of stack for this thread to run
     // after everything is set, push this thread into run queue and
     // - make it ready for the execution.
+
+    TCB *new_thread = (TCB *)malloc(sizeof(TCB));
+    if (new_thread == NULL)
+    {
+        perror("Failed to allocate TCB");
+        exit(1);
+    }
+    tcb* TCB_stuff = new_thread-> TCB;
+    TCB_stuff->thread_id = *thread;
+
+    if (getcontext(&TCB_stuff->thread_context) < 0){
+        perror("getcontext");
+        exit(1);
+    }
+    ucontext_t *new_context = (ucontext_t *)malloc(sizeof(ucontext_t));
+
+    // Allocate space for stack
+	void *stack=malloc(STACK_SIZE);
+	
+	if (stack == NULL){
+		perror("Failed to allocate stack");
+		exit(1);
+	}
+
+    new_context->uc_link = NULL;
+    new_context->uc_stack.ss_sp = stack;
+    new_context->uc_stack.ss_size = STACK_SIZE;
+    new_context->uc_stack.ss_flags = 0;
+
+    makecontext(new_context, (void *)&function, 1, arg);
+
+    TCB_stuff->thread_context = *new_context;
+    TCB_stuff->thread_stack = stack;
+
+
     return 0;
 }
 
