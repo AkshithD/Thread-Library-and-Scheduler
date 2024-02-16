@@ -12,16 +12,19 @@
 
 #define STACK_SIZE 16 * 1024
 #define QUANTUM 10 * 1000
+#define SCHED_STACK_SIZE 16 * 1024
 
 //Initializing the queue:
 typedef struct node {
     tcb* TCB;        
-    struct Queue* next; 
-} TCB;
+    struct node* next; 
+} Node;
 
-typedef struct Queue {
-    TCB* head;        
-    TCB* tail;    
+typedef struct {
+    Node* ready_queue_head; // Head of the ready queue
+    Node* ready_queue_tail; // Tail of the ready queue, for efficient enqueue
+    ucontext_t context;      // Scheduler context
+    void *scheduler_stack; // Stack for scheduler context
 } Scheduler;
 
 typedef enum {
@@ -34,7 +37,36 @@ typedef enum {
 
 // INITIALIZE ALL YOUR OTHER VARIABLES HERE
 int init_scheduler_done = 0;
+Scheduler *ready_queue;
 
+void initialize_scheduler() {
+    ready_queue = (Scheduler *)malloc(sizeof(Scheduler));
+    if (ready_queue == NULL) {
+        // Handle memory allocation failure
+        perror("Failed to allocate scheduler");
+        exit(1); // Or another appropriate error handling mechanism
+    }
+    ready_queue->ready_queue_head = NULL;
+    ready_queue->ready_queue_tail = NULL;
+    // Allocate the scheduler's stack dynamically
+    ready_queue->scheduler_stack = malloc(SCHED_STACK_SIZE);
+    if (ready_queue->scheduler_stack == NULL) {
+        // Handle memory allocation failure
+        perror("Failed to allocate stack for scheduler");
+        exit(1); // Or another appropriate error handling mechanism
+    }
+
+    // Get the current context to modify it into the scheduler's context
+    getcontext(&ready_queue->context);
+
+    // Set up the scheduler context
+    ready_queue->context.uc_stack.ss_sp = ready_queue->scheduler_stack;
+    ready_queue->context.uc_stack.ss_size = SCHED_STACK_SIZE;
+    ready_queue->context.uc_link = NULL; // Typically no successor for the scheduler
+
+    // Assign a function that the scheduler will execute
+    makecontext(&ready_queue->context, (void (*)())schedule, 0);
+}
 
 /* create a new thread */
 int worker_create(worker_t *thread, pthread_attr_t *attr,
@@ -46,7 +78,7 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     // after everything is set, push this thread into run queue and
     // - make it ready for the execution.
 
-    TCB *new_thread = (TCB *)malloc(sizeof(TCB));
+    Node *new_thread = (Node *)malloc(sizeof(Node));
     if (new_thread == NULL)
     {
         perror("Failed to allocate TCB");
@@ -54,13 +86,12 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     }
     tcb* TCB_stuff = new_thread-> TCB;
     TCB_stuff->thread_id = *thread;
-
-    if (getcontext(&TCB_stuff->thread_context) < 0){
-        perror("getcontext");
-        exit(1);
-    }
+    TCB_stuff->thread_status = READY;
     ucontext_t *new_context = (ucontext_t *)malloc(sizeof(ucontext_t));
-
+    if (getcontext(&TCB_stuff->thread_context) < 0){
+            perror("getcontext");
+            exit(1);
+        }
     // Allocate space for stack
 	void *stack=malloc(STACK_SIZE);
 	
@@ -79,6 +110,8 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     TCB_stuff->thread_context = *new_context;
     TCB_stuff->thread_stack = stack;
 
+    new_thread->next = NULL;
+    // Add the new thread to the queue
 
     return 0;
 }
