@@ -33,11 +33,37 @@ typedef enum {
     TERMINATED
 } ThreadState;
 
+typedef struct {
+    tcb** array; // Pointer to an array of TCB pointers
+    size_t used;   // Number of TCBs currently in use
+    size_t size;   // Current allocated size of the array
+}ArrayList;
 
 // INITIALIZE ALL YOUR OTHER VARIABLES HERE
 int init_scheduler_done = 0;
 Scheduler *ready_queue;
 Node *current_thread;
+ArrayList All_threads;
+
+void init_all_threads_array() {
+    All_threads.array = malloc(sizeof(tcb*) * 100);
+    All_threads.used = 0;
+    All_threads.size = 100;
+    if (All_threads.array == NULL) {
+        perror("Failed to allocate TCB array");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void insert_tcb(tcb* tcb) {
+    if (All_threads.used == All_threads.size) {
+        size_t newSize = All_threads.size * 2;
+        All_threads.array = realloc(All_threads.array, sizeof(tcb) * newSize);
+        All_threads.size = newSize;
+    }
+    All_threads.array[All_threads.used++] = tcb; // Insert the new TCB and increment the used count
+    tcb->thread_id = All_threads.used; // Assign the thread ID as the current used count
+}
 
 void initialize_scheduler() {
     ready_queue = (Scheduler *)malloc(sizeof(Scheduler));
@@ -75,17 +101,22 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
         init_scheduler_done = 1;
     }
 
+    if (All_threads.used == 0) {
+        init_all_threads_array();
+    }
+
     Node *new_thread = (Node *)malloc(sizeof(Node));
     if (new_thread == NULL)
     {
         perror("Failed to allocate TCB");
         exit(1);
     }
+    new_thread->TCB = (tcb *)malloc(sizeof(tcb));
     tcb* TCB_stuff = new_thread-> TCB;
-    TCB_stuff->thread_id = *thread;
+    insert_tcb(TCB_stuff);
     TCB_stuff->thread_status = READY;
-    ucontext_t *new_context = (ucontext_t *)malloc(sizeof(ucontext_t));
-    if (getcontext(&TCB_stuff->thread_context) < 0){
+    ucontext_t *new_context = &TCB_stuff->thread_context;
+    if (getcontext(new_context) < 0) {
             perror("getcontext");
             exit(1);
         }
@@ -112,11 +143,13 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     if (ready_queue->ready_queue_head == NULL) {
         ready_queue->ready_queue_head = new_thread;
         ready_queue->ready_queue_tail = new_thread;
+        current_thread = new_thread;
+        current_thread->next = NULL;
     } else {
         ready_queue->ready_queue_tail->next = new_thread;
         ready_queue->ready_queue_tail = new_thread;
+        new_thread->next = NULL;
     }
-    current_thread->next = NULL; // Ensure the queue is properly terminated
     return 0;
 }
 
@@ -144,22 +177,57 @@ int worker_yield()
     return 0;
 };
 
+void delete_thread(Node *thread) {
+    free(thread->TCB->thread_stack);
+    free(thread->TCB);
+    free(thread);
+}
+
 /* terminate a thread */
 void worker_exit(void *value_ptr)
 {
     // - if value_ptr is provided, save return value
     // - de-allocate any dynamic memory created when starting this thread (could be done here or elsewhere)
+    current_thread->TCB->thread_status = TERMINATED;
+    current_thread->TCB->thread_return = value_ptr;
+    // If there is a thread waiting for this thread to terminate, unblock it
+    if (current_thread->TCB->joiner != NULL) {
+        // Directly mark the joiner thread as READY
+        current_thread->TCB->joiner->thread_status = READY;
+        
+        // Assuming we have a function to add the joiner back from the block list to the ready queue
+
+    }
+    // swap context to the scheduler
+    if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
+        perror("swapcontext");
+        exit(1);
+    }
 }
 
 /* Wait for thread termination */
 int worker_join(worker_t thread, void **value_ptr)
 {
-
     // - wait for a specific thread to terminate
     // - if value_ptr is provided, retrieve return value from joining thread
     // - de-allocate any dynamic memory created by the joining thread
-    return 0;
-
+    Node *target_thread = All_threads.array[thread - 1];
+    if (target_thread->TCB->thread_status != TERMINATED) {
+        // Block the calling thread
+        current_thread->TCB->thread_status = BLOCKED;
+        current_thread->TCB->thread_return = value_ptr; // I HAVE NO IDEA HOW TO UPDATE THE VALPTR IF TARGET IS STILL RUNNING!!!
+        // Record the joiner in the target thread's TCB
+        target_thread->TCB->joiner = current_thread->TCB;
+        // Switch to scheduler context to block the current thread and continue with another thread
+        if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
+            perror("swapcontext");
+            exit(1);
+        }
+    } else if (value_ptr != NULL) {
+        // If the target thread has already terminated, directly pass the return value
+        *value_ptr = target_thread->TCB->thread_return;
+    }
+    return 0; // Success
 };
 
 /* initialize the mutex lock */
