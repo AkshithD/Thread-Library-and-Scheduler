@@ -24,7 +24,6 @@ typedef struct {
     Node* ready_queue_head; // Head of the ready queue
     Node* ready_queue_tail; // Tail of the ready queue, for efficient enqueue
     ucontext_t context;      // Scheduler context
-    void *scheduler_stack; // Stack for scheduler context
 } Scheduler;
 
 typedef enum {
@@ -38,6 +37,7 @@ typedef enum {
 // INITIALIZE ALL YOUR OTHER VARIABLES HERE
 int init_scheduler_done = 0;
 Scheduler *ready_queue;
+Node *current_thread;
 
 void initialize_scheduler() {
     ready_queue = (Scheduler *)malloc(sizeof(Scheduler));
@@ -48,19 +48,11 @@ void initialize_scheduler() {
     }
     ready_queue->ready_queue_head = NULL;
     ready_queue->ready_queue_tail = NULL;
-    // Allocate the scheduler's stack dynamically
-    ready_queue->scheduler_stack = malloc(SCHED_STACK_SIZE);
-    if (ready_queue->scheduler_stack == NULL) {
-        // Handle memory allocation failure
-        perror("Failed to allocate stack for scheduler");
-        exit(1); // Or another appropriate error handling mechanism
-    }
-
     // Get the current context to modify it into the scheduler's context
     getcontext(&ready_queue->context);
 
     // Set up the scheduler context
-    ready_queue->context.uc_stack.ss_sp = ready_queue->scheduler_stack;
+    ready_queue->context.uc_stack.ss_sp = malloc(SCHED_STACK_SIZE);
     ready_queue->context.uc_stack.ss_size = SCHED_STACK_SIZE;
     ready_queue->context.uc_link = NULL; // Typically no successor for the scheduler
 
@@ -124,18 +116,32 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
         ready_queue->ready_queue_tail->next = new_thread;
         ready_queue->ready_queue_tail = new_thread;
     }
+    current_thread->next = NULL; // Ensure the queue is properly terminated
     return 0;
 }
 
 /* give CPU possession to other user-level worker threads voluntarily */
 int worker_yield()
 {
-
     // - change worker thread's state from Running to Ready
     // - save context of this thread to its thread control block
     // - switch from thread context to scheduler context
-    return 0;
+    current_thread->TCB->thread_status = READY;
+    if (ready_queue->ready_queue_head == NULL) {
+        ready_queue->ready_queue_head = ready_queue-> ready_queue_tail = current_thread;
+    } else {
+        ready_queue->ready_queue_tail->next = current_thread;
+        ready_queue->ready_queue_tail = current_thread;
+    }
+    current_thread->next = NULL; // Ensure the queue is properly terminated
 
+    // Swap context to the scheduler, saving the current context for later
+    if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
+        perror("swapcontext");
+        exit(1);
+    }
+
+    return 0;
 };
 
 /* terminate a thread */
