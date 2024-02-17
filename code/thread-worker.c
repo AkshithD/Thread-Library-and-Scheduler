@@ -197,12 +197,12 @@ void worker_exit(void *value_ptr)
     current_thread->TCB->thread_status = TERMINATED;
     current_thread->TCB->thread_return = value_ptr;
     // If there is a thread waiting for this thread to terminate, unblock it
-    if (current_thread->TCB->joiner != NULL) {
-        // Directly mark the joiner thread as READY
+    if (current_thread->TCB->joiner != NULL && current_thread->TCB->joiner_return != NULL) {
+        // Set the joiner's return value
         current_thread->TCB->joiner->thread_status = READY;
-        
-        // Assuming we have a function to add the joiner back from the block list to the ready queue
-        
+        *(current_thread->TCB->joiner_return) = value_ptr;
+        // add the joiner back from the block list to the ready queue
+
     }
     // swap context to the scheduler
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
@@ -221,7 +221,6 @@ int worker_join(worker_t thread, void **value_ptr)
     if (target_thread->TCB->thread_status != TERMINATED) {
         // Block the calling thread
         current_thread->TCB->thread_status = BLOCKED;
-        current_thread->TCB->thread_return = value_ptr; // I HAVE NO IDEA HOW TO UPDATE THE VALPTR IF TARGET IS STILL RUNNING!!!
         // Add the calling thread to the blocked queue
         current_thread->next = NULL;
         if (blocked_queue.blocked_head == NULL) {
@@ -233,6 +232,7 @@ int worker_join(worker_t thread, void **value_ptr)
 
         // Record the joiner in the target thread's TCB
         target_thread->TCB->joiner = current_thread->TCB;
+        target_thread->TCB->joiner_return = value_ptr; // Store the address of value_ptr
         // Switch to scheduler context to block the current thread and continue with another thread
         if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
             perror("swapcontext");

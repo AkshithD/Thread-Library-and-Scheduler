@@ -14,6 +14,7 @@ typedef struct TCB
     void *thread_stack;       // Thread stack pointer
     void *thread_return;      // Thread return value
     struct TCB *joiner;           // Thread that is waiting for this thread to terminate
+    void **joiner_return;      // Return value of the thread that is waiting for this thread to terminate
     // Thread priority (e.g., for scheduling)
     // Add more states as needed...
 
