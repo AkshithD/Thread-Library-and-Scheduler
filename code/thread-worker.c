@@ -39,11 +39,17 @@ typedef struct {
     size_t size;   // Current allocated size of the array
 }ArrayList;
 
+typedef struct {
+    Node* blocked_head; // Head of the blocked queue
+    Node* blocked_tail; // Tail of the blocked queue, for efficient enqueue
+} BlockedList;
+
 // INITIALIZE ALL YOUR OTHER VARIABLES HERE
 int init_scheduler_done = 0;
 Scheduler *ready_queue;
 Node *current_thread;
 ArrayList All_threads;
+BlockedList blocked_queue;
 
 void init_all_threads_array() {
     All_threads.array = malloc(sizeof(tcb*) * 100);
@@ -196,7 +202,7 @@ void worker_exit(void *value_ptr)
         current_thread->TCB->joiner->thread_status = READY;
         
         // Assuming we have a function to add the joiner back from the block list to the ready queue
-
+        
     }
     // swap context to the scheduler
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
@@ -216,6 +222,15 @@ int worker_join(worker_t thread, void **value_ptr)
         // Block the calling thread
         current_thread->TCB->thread_status = BLOCKED;
         current_thread->TCB->thread_return = value_ptr; // I HAVE NO IDEA HOW TO UPDATE THE VALPTR IF TARGET IS STILL RUNNING!!!
+        // Add the calling thread to the blocked queue
+        current_thread->next = NULL;
+        if (blocked_queue.blocked_head == NULL) {
+            blocked_queue.blocked_head = blocked_queue.blocked_tail = current_thread;
+        } else {
+            blocked_queue.blocked_tail->next = current_thread;
+            blocked_queue.blocked_tail = current_thread;
+        }
+
         // Record the joiner in the target thread's TCB
         target_thread->TCB->joiner = current_thread->TCB;
         // Switch to scheduler context to block the current thread and continue with another thread
