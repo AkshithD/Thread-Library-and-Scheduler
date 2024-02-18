@@ -14,10 +14,17 @@
 #define QUANTUM 10 * 1000
 #define SCHED_STACK_SIZE 16 * 1024
 
+typedef enum {
+    QUEUE_TYPE_READY,
+    QUEUE_TYPE_MUTEX_BLOCK,
+    QUEUE_TYPE_GENERAL_BLOCK,
+} QueueType;
+
 //Initializing the queue:
 typedef struct node {
     tcb* TCB;        
-    struct node* next; 
+    struct node* next;
+    QueueType type;
 } Node;
 
 typedef struct {
@@ -145,6 +152,7 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     TCB_stuff->thread_stack = stack;
 
     new_thread->next = NULL;
+    new_thread->type = QUEUE_TYPE_READY;
     // Add the new thread to the queue
     if (ready_queue->ready_queue_head == NULL) {
         ready_queue->ready_queue_head = new_thread;
@@ -196,13 +204,36 @@ void worker_exit(void *value_ptr)
     // - de-allocate any dynamic memory created when starting this thread (could be done here or elsewhere)
     current_thread->TCB->thread_status = TERMINATED;
     current_thread->TCB->thread_return = value_ptr;
+    current_thread->next = NULL;
+    current_thread->type = NULL;
     // If there is a thread waiting for this thread to terminate, unblock it
     if (current_thread->TCB->joiner != NULL && current_thread->TCB->joiner_return != NULL) {
         // Set the joiner's return value
         current_thread->TCB->joiner->thread_status = READY;
         *(current_thread->TCB->joiner_return) = value_ptr;
         // add the joiner back from the block list to the ready queue
-
+        Node *search_ptr1 = NULL;
+        Node *search_ptr2 = blocked_queue.blocked_head;
+        while (search_ptr2 != NULL) {
+            if (search_ptr2->TCB->thread_id == current_thread->TCB->joiner->thread_id) {
+                if (search_ptr1 == NULL) {
+                    blocked_queue.blocked_head = search_ptr2->next;
+                } else {
+                    search_ptr1->next = search_ptr2->next;
+                }
+                search_ptr2->next = NULL;
+                search_ptr2->type = QUEUE_TYPE_READY;
+                if (ready_queue->ready_queue_head == NULL) {
+                    ready_queue->ready_queue_head = ready_queue->ready_queue_tail = search_ptr2;
+                } else {
+                    ready_queue->ready_queue_tail->next = search_ptr2;
+                    ready_queue->ready_queue_tail = search_ptr2;
+                }
+                break;
+            }
+            search_ptr1 = search_ptr2;
+            search_ptr2 = search_ptr2->next;
+        }
     }
     // swap context to the scheduler
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
@@ -223,6 +254,7 @@ int worker_join(worker_t thread, void **value_ptr)
         current_thread->TCB->thread_status = BLOCKED;
         // Add the calling thread to the blocked queue
         current_thread->next = NULL;
+        current_thread->type = QUEUE_TYPE_GENERAL_BLOCK;
         if (blocked_queue.blocked_head == NULL) {
             blocked_queue.blocked_head = blocked_queue.blocked_tail = current_thread;
         } else {
