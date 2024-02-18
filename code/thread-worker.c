@@ -74,8 +74,8 @@ void insert_tcb(tcb* tcb) {
         All_threads.array = realloc(All_threads.array, sizeof(tcb) * newSize);
         All_threads.size = newSize;
     }
-    All_threads.array[All_threads.used++] = tcb; // Insert the new TCB and increment the used count
-    tcb->thread_id = All_threads.used; // Assign the thread ID as the current used count
+    All_threads.array[All_threads.used] = tcb; // Insert the new TCB and increment the used count
+    tcb->thread_id = All_threads.used++; // Assign the thread ID as the current used count
 }
 
 void initialize_scheduler() {
@@ -127,6 +127,7 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     new_thread->TCB = (tcb *)malloc(sizeof(tcb));
     tcb* TCB_stuff = new_thread-> TCB;
     insert_tcb(TCB_stuff);
+    *thread = TCB_stuff->thread_id;
     TCB_stuff->thread_status = READY;
     ucontext_t *new_context = &TCB_stuff->thread_context;
     if (getcontext(new_context) < 0) {
@@ -282,20 +283,46 @@ int worker_mutex_init(worker_mutex_t *mutex,
                       const pthread_mutexattr_t *mutexattr)
 {
     //- initialize data structures for this mutex
+    if (mutex == NULL) {
+        perror("Mutex pointer is NULL");
+        return -1; // Return an error code to indicate failure
+    }
+    mutex->lock = 0; // Mutex is initially unlocked
+    mutex->owner = -1;  
+    mutex->wait_queue_head = NULL; 
+    mutex->wait_queue_tail = NULL; 
     return 0;
-
 };
 
 /* aquire the mutex lock */
 int worker_mutex_lock(worker_mutex_t *mutex)
 {
-
     // - use the built-in test-and-set atomic function to test the mutex
     // - if the mutex is acquired successfully, enter the critical section
     // - if acquiring mutex fails, push current thread into block list and
     // context switch to the scheduler thread
+    // Attempt to acquire the lock atomically
+    if (__sync_lock_test_and_set(&(mutex->lock), 1) == 0) {
+        // Lock acquired successfully
+        return;
+    }
+    // Lock is already held, so block the current thread
+    current_thread->TCB->thread_status = BLOCKED;
+    // Add the calling thread to the blocked queue
+    current_thread->next = NULL;
+    current_thread->type = QUEUE_TYPE_MUTEX_BLOCK;
+    if (mutex->wait_queue_head == NULL) {
+        mutex->wait_queue_head = mutex->wait_queue_tail = current_thread;
+    } else {
+        mutex->wait_queue_tail->next = current_thread;
+        mutex->wait_queue_tail = current_thread;
+    }
+    // Switch to scheduler context to block the current thread and continue with another thread
+    if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
+        perror("swapcontext");
+        exit(1);
+    }
     return 0;
-
 };
 
 /* release the mutex lock */
@@ -304,7 +331,20 @@ int worker_mutex_unlock(worker_mutex_t *mutex)
     // - release mutex and make it available again.
     // - put one or more threads in block list to run queue
     // so that they could compete for mutex later.
-
+    __sync_lock_release(&(mutex->lock));
+    // If there are threads waiting for the mutex, unblock one of them
+    if (mutex->wait_queue_head != NULL) {
+        Node *unblocked_thread = mutex->wait_queue_head;
+        mutex->wait_queue_head = unblocked_thread->next;
+        unblocked_thread->next = NULL;
+        unblocked_thread->type = QUEUE_TYPE_READY;
+        if (ready_queue->ready_queue_head == NULL) {
+            ready_queue->ready_queue_head = ready_queue->ready_queue_tail = unblocked_thread;
+        } else {
+            ready_queue->ready_queue_tail->next = unblocked_thread;
+            ready_queue->ready_queue_tail = unblocked_thread;
+        }
+    }
     return 0;
 };
 
@@ -313,7 +353,12 @@ int worker_mutex_destroy(worker_mutex_t *mutex)
 {
     // - make sure mutex is not being used
     // - de-allocate dynamic memory created in worker_mutex_init
-
+    if (mutex->wait_queue_head != NULL) {
+        return -1; // Indicate that the mutex cannot be destroyed because it has waiting threads
+    }
+    if (mutex->lock != 0) {
+        return -1; // Indicate that the mutex cannot be destroyed because it is locked
+    }
     return 0;
 };
 
