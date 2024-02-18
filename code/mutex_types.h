@@ -3,19 +3,6 @@
 
 #include "thread_worker_types.h"
 
-typedef enum {
-    QUEUE_TYPE_READY,
-    QUEUE_TYPE_MUTEX_BLOCK,
-    QUEUE_TYPE_GENERAL_BLOCK,
-} QueueType;
-
-/* Node struct definition */
-typedef struct node {
-    tcb* TCB;        
-    struct node* next;
-    QueueType type;
-} Node;
-
 /* mutex struct definition */
 typedef struct worker_mutex_t
 {
