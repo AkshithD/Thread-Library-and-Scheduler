@@ -31,6 +31,8 @@ int init_scheduler_done = 0;
 Scheduler *ready_queue;
 Node *current_thread;
 ArrayList All_threads;
+struct itimerval timer;
+struct sigaction sa;
 
 void init_all_threads_map() {
     All_threads.array = malloc(sizeof(Node*) * 100);

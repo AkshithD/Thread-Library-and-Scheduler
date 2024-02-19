@@ -15,6 +15,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ucontext.h>
+#include <signal.h>
+#include <sys/time.h>
 #include "mutex_types.h"
 
 /* Function Declarations: */
