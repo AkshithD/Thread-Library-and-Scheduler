@@ -54,6 +54,22 @@ void insert_thread_to_map(Node *inserting_thread) {
     inserting_thread->TCB->thread_id = All_threads.used++; // Assign the thread ID as the current used count
 }
 
+/* Timer functions */
+void init_timer() {
+    // Set up the signal handler
+    sa.sa_handler = &timer_interrupt_handler;
+    sigaction(SIGPROF, &sa, NULL);
+    // Configure the timer
+    timer.it_value.tv_sec = 0;
+    timer.it_value.tv_usec = QUANTUM;
+    timer.it_interval.tv_sec = 0;
+    timer.it_interval.tv_usec = 0;
+}
+
+void reset_timer() {
+    setitimer(ITIMER_PROF, &timer, NULL);
+}
+
 void initialize_scheduler() {
     ready_queue = (Scheduler *)malloc(sizeof(Scheduler));
     if (ready_queue == NULL) {
@@ -73,6 +89,9 @@ void initialize_scheduler() {
 
     // Assign a function that the scheduler will execute
     makecontext(&ready_queue->context, (void (*)())schedule, 0);
+
+    // Initialize the timer
+    init_timer();
 }
 
 /* Queue helper functions */
@@ -297,30 +316,64 @@ int worker_mutex_destroy(worker_mutex_t *mutex)
     return 0;
 };
 
+/* Timer interrupt handler */
+static void timer_interrupt_handler(int sig)
+{
+    // - save the context of the current thread
+    // - context switch to the scheduler
+    if (current_thread != NULL) {
+        current_thread->TCB->thread_status = READY;
+        enqueue_to_ready_queue(current_thread);
+    }
+    // Switch to the scheduler context to shedule()
+    if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
+        perror("swapcontext");
+        exit(EXIT_FAILURE);
+    }
+}
+
 /* scheduler */
 static void schedule()
 {
 // - every time a timer interrupt occurs, your worker thread library
 // should be contexted switched from a thread context to this
 // schedule() function
-
 // - invoke scheduling algorithms according to the policy (RR or MLFQ)
 
 // - schedule policy
 #ifndef MLFQ
-    // Choose RR
-    
+    sched_rr();
+    if (current_thread == NULL) {
+        return; // idk what to do here
+    }
 #else
     // Choose MLFQ
     
 #endif
+
+// save the context of the current thread
+    getcontext(&ready_queue->context);
+    makecontext(&ready_queue->context, (void (*)())schedule, 0);
+    // context switch to the next thread
+    reset_timer();
+    setcontext(&current_thread->TCB->thread_context);
 }
 
 static void sched_rr()
 {
     // - your own implementation of RR
     // (feel free to modify arguments and return types)
-
+    if (ready_queue->ready_queue_head == NULL) {
+        return NULL;
+    }
+    current_thread = ready_queue->ready_queue_head;
+    ready_queue->ready_queue_head = current_thread->next;
+    if (ready_queue->ready_queue_head == NULL) {
+        ready_queue->ready_queue_tail = NULL;
+    }
+    current_thread->type = QUEUE_TYPE_READY;
+    current_thread->next = NULL;
+    current_thread->TCB->thread_status = RUNNING;
 }
 
 /* Preemptive MLFQ scheduling algorithm */
