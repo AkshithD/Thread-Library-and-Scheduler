@@ -21,8 +21,8 @@ typedef struct {
 } Scheduler;
 
 typedef struct {
-    tcb** array; // Pointer to an array of TCB pointers
-    size_t used;   // Number of TCBs currently in use
+    Node** array; // Array of threads
+    size_t used;   // Number of threads currently in use
     size_t size;   // Current allocated size of the array
 }ArrayList;
 
@@ -79,6 +79,66 @@ void initialize_scheduler() {
     makecontext(&ready_queue->context, (void (*)())schedule, 0);
 }
 
+/* Queue helper functions */
+void enqueue_to_ready_queue(Node *new_thread) {
+    new_thread->next = NULL;
+    new_thread->type = QUEUE_TYPE_READY;
+    if (ready_queue->ready_queue_head == NULL) {
+        ready_queue->ready_queue_head = ready_queue->ready_queue_tail = new_thread;
+    } else {
+        ready_queue->ready_queue_tail->next = new_thread;
+        ready_queue->ready_queue_tail = new_thread;
+    }
+}
+
+void enqueue_to_blocked_queue(Node *new_thread) {
+    new_thread->next = NULL;
+    new_thread->type = QUEUE_TYPE_GENERAL_BLOCK;
+    if (blocked_queue.blocked_head == NULL) {
+        blocked_queue.blocked_head = blocked_queue.blocked_tail = new_thread;
+    } else {
+        blocked_queue.blocked_tail->next = new_thread;
+        blocked_queue.blocked_tail = new_thread;
+    }
+}
+
+void dequeue_from_ready_queue() {
+    if (ready_queue->ready_queue_head == NULL) {
+        return;
+    }
+    current_thread = ready_queue->ready_queue_head;
+    ready_queue->ready_queue_head = current_thread->next;
+    if (ready_queue->ready_queue_head == NULL) {
+        ready_queue->ready_queue_tail = NULL;
+    }
+    current_thread->type = QUEUE_TYPE_READY;
+    current_thread->next = NULL;
+    current_thread->TCB->thread_status = RUNNING;
+}
+
+void dequeue_from_blocked_queue(Node *thread) {
+    Node *search_prev = NULL;
+    Node *search = blocked_queue.blocked_head;
+    while (search != NULL) {
+        if (search == thread) {
+            if (search_prev == NULL) {
+                blocked_queue.blocked_head = search->next;
+            } else {
+                search_prev->next = search->next;
+            }
+            if (search == blocked_queue.blocked_tail) {
+                blocked_queue.blocked_tail = search_prev;
+                search_prev->next = NULL;
+            }
+            search->TCB->thread_status = READY;
+            enqueue_to_ready_queue(search);
+            break;
+        }
+        search_prev = search;
+        search = search->next;
+    }
+}
+
 /* create a new thread */
 int worker_create(worker_t *thread, pthread_attr_t *attr,
                   void *(*function)(void *), void *arg)
@@ -101,23 +161,20 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     Node *new_thread = (Node *)malloc(sizeof(Node));
     if (new_thread == NULL)
     {
-        perror("Failed to allocate TCB");
-        exit(1);
+        return -1;
     }
     new_thread->TCB = (tcb *)malloc(sizeof(tcb));
     tcb* TCB_stuff = new_thread-> TCB;
     TCB_stuff->thread_status = READY;
     ucontext_t *new_context = &TCB_stuff->thread_context;
     if (getcontext(new_context) < 0) {
-            perror("getcontext");
-            exit(1);
-        }
+        return -1;
+    }
     // Allocate space for stack
 	void *stack=malloc(STACK_SIZE);
 	
 	if (stack == NULL){
-		perror("Failed to allocate stack");
-		exit(1);
+		return -1;
 	}
 
     new_context->uc_link = NULL;
@@ -135,14 +192,7 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     insert_thread_to_map(new_thread);
     *thread = TCB_stuff->thread_id;
     // Add the new thread to the queue
-    if (ready_queue->ready_queue_head == NULL) {
-        ready_queue->ready_queue_head = new_thread;
-        ready_queue->ready_queue_tail = new_thread;
-    } else {
-        ready_queue->ready_queue_tail->next = new_thread;
-        ready_queue->ready_queue_tail = new_thread;
-    }
-    new_thread->next = NULL;
+    enqueue_to_ready_queue(new_thread);
     return 0;
 }
 
@@ -153,18 +203,11 @@ int worker_yield()
     // - save context of this thread to its thread control block
     // - switch from thread context to scheduler context
     current_thread->TCB->thread_status = READY;
-    if (ready_queue->ready_queue_head == NULL) {
-        ready_queue->ready_queue_head = ready_queue-> ready_queue_tail = current_thread;
-    } else {
-        ready_queue->ready_queue_tail->next = current_thread;
-        ready_queue->ready_queue_tail = current_thread;
-    }
-    current_thread->next = NULL; // Ensure the queue is properly terminated
-    current_thread->type = QUEUE_TYPE_READY;
+    enqueue_to_ready_queue(current_thread);
     // Swap context to the scheduler, saving the current context for later
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
         perror("swapcontext");
-        exit(1);
+        return -1;
     }
     return 0;
 };
@@ -184,45 +227,10 @@ void worker_exit(void *value_ptr)
     current_thread->TCB->thread_return = value_ptr;
     current_thread->next = NULL;
     current_thread->type = NULL;
-    // If there is a thread waiting for this thread to terminate, unblock it
-    if (current_thread->TCB->joiner != NULL) {
-        // Set the joiner's return value
-        if (current_thread->TCB->joiner_return != NULL){
-            *(current_thread->TCB->joiner_return) = value_ptr;
-        }
-        // take the joiner out of the blocked queue and put it into the ready queue
-        Node *search_prev = NULL;
-        Node *search = blocked_queue.blocked_head;
-        while (search != NULL) {
-            if (search == current_thread->TCB->joiner) {
-                if (search_prev == NULL) {
-                    blocked_queue.blocked_head = search->next;
-                } else {
-                    search_prev->next = search->next;
-                }
-                if (search == blocked_queue.blocked_tail) {
-                    blocked_queue.blocked_tail = search_prev;
-                    search_prev->next = NULL;
-                }
-                search->next = NULL;
-                search->type = QUEUE_TYPE_READY;
-                search->TCB->thread_status = READY;
-                if (ready_queue->ready_queue_head == NULL) {
-                    ready_queue->ready_queue_head = ready_queue->ready_queue_tail = search;
-                } else {
-                    ready_queue->ready_queue_tail->next = search;
-                    ready_queue->ready_queue_tail = search;
-                }
-                break;
-            }
-            search_prev = search;
-            search = search->next;
-        }
-    }
     // Switch to the scheduler context to continue with another thread
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
         perror("swapcontext");
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 }
 
@@ -233,28 +241,18 @@ int worker_join(worker_t thread, void **value_ptr)
     // - if value_ptr is provided, retrieve return value from joining thread
     // - de-allocate any dynamic memory created by the joining thread
     Node *target_thread = All_threads.array[thread - 1];
-    if (target_thread->TCB->thread_status != TERMINATED) {
-        // Block the calling thread
+    if (target_thread == NULL) {
+        return -1; // Indicate that the thread does not exist
+    }
+    while (target_thread->TCB->thread_status != TERMINATED) { //potential infinite loop
         current_thread->TCB->thread_status = BLOCKED;
-        // Add the calling thread to the blocked queue
-        current_thread->next = NULL;
-        current_thread->type = QUEUE_TYPE_GENERAL_BLOCK;
-        if (blocked_queue.blocked_head == NULL) {
-            blocked_queue.blocked_head = blocked_queue.blocked_tail = current_thread;
-        } else {
-            blocked_queue.blocked_tail->next = current_thread;
-            blocked_queue.blocked_tail = current_thread;
-        }
-        // Record the joiner in the target thread's TCB
-        target_thread->TCB->joiner = current_thread;
-        target_thread->TCB->joiner_return = value_ptr; // Store the address of value_ptr
-        // Switch to scheduler context to block the current thread and continue with another thread
+        // Switch to the scheduler context to block the current thread and continue with another thread
         if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
             perror("swapcontext");
-            exit(1);
+            return -1;
         }
-    } else if (value_ptr != NULL) {
-        // If the target thread has already terminated, directly pass the return value
+    }
+    if (value_ptr != NULL) {
         *value_ptr = target_thread->TCB->thread_return;
     }
     return 0; // Success
@@ -286,7 +284,7 @@ int worker_mutex_lock(worker_mutex_t *mutex)
     // Attempt to acquire the lock atomically
     if (__sync_lock_test_and_set(&(mutex->lock), 1) == 0) {
         // Lock acquired successfully
-        return;
+        return 0;
     }
     // Lock is already held, so block the current thread
     current_thread->TCB->thread_status = BLOCKED;
@@ -302,7 +300,7 @@ int worker_mutex_lock(worker_mutex_t *mutex)
     // Switch to scheduler context to block the current thread and continue with another thread
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
         perror("swapcontext");
-        exit(1);
+        return -1;
     }
     return 0;
 };
@@ -318,14 +316,7 @@ int worker_mutex_unlock(worker_mutex_t *mutex)
     if (mutex->wait_queue_head != NULL) {
         Node *unblocked_thread = mutex->wait_queue_head;
         mutex->wait_queue_head = unblocked_thread->next;
-        unblocked_thread->next = NULL;
-        unblocked_thread->type = QUEUE_TYPE_READY;
-        if (ready_queue->ready_queue_head == NULL) {
-            ready_queue->ready_queue_head = ready_queue->ready_queue_tail = unblocked_thread;
-        } else {
-            ready_queue->ready_queue_tail->next = unblocked_thread;
-            ready_queue->ready_queue_tail = unblocked_thread;
-        }
+        enqueue_to_ready_queue(unblocked_thread);
     }
     return 0;
 };
