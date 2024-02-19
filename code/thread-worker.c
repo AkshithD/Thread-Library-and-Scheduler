@@ -26,17 +26,11 @@ typedef struct {
     size_t size;   // Current allocated size of the array
 }ArrayList;
 
-typedef struct {
-    Node* blocked_head; // Head of the blocked queue
-    Node* blocked_tail; // Tail of the blocked queue, for efficient enqueue
-} BlockedList;
-
 // INITIALIZE ALL YOUR OTHER VARIABLES HERE
 int init_scheduler_done = 0;
 Scheduler *ready_queue;
 Node *current_thread;
 ArrayList All_threads;
-BlockedList blocked_queue;
 
 void init_all_threads_map() {
     All_threads.array = malloc(sizeof(Node*) * 100);
@@ -91,17 +85,6 @@ void enqueue_to_ready_queue(Node *new_thread) {
     }
 }
 
-void enqueue_to_blocked_queue(Node *new_thread) {
-    new_thread->next = NULL;
-    new_thread->type = QUEUE_TYPE_GENERAL_BLOCK;
-    if (blocked_queue.blocked_head == NULL) {
-        blocked_queue.blocked_head = blocked_queue.blocked_tail = new_thread;
-    } else {
-        blocked_queue.blocked_tail->next = new_thread;
-        blocked_queue.blocked_tail = new_thread;
-    }
-}
-
 void dequeue_from_ready_queue() {
     if (ready_queue->ready_queue_head == NULL) {
         return;
@@ -114,29 +97,6 @@ void dequeue_from_ready_queue() {
     current_thread->type = QUEUE_TYPE_READY;
     current_thread->next = NULL;
     current_thread->TCB->thread_status = RUNNING;
-}
-
-void dequeue_from_blocked_queue(Node *thread) {
-    Node *search_prev = NULL;
-    Node *search = blocked_queue.blocked_head;
-    while (search != NULL) {
-        if (search == thread) {
-            if (search_prev == NULL) {
-                blocked_queue.blocked_head = search->next;
-            } else {
-                search_prev->next = search->next;
-            }
-            if (search == blocked_queue.blocked_tail) {
-                blocked_queue.blocked_tail = search_prev;
-                search_prev->next = NULL;
-            }
-            search->TCB->thread_status = READY;
-            enqueue_to_ready_queue(search);
-            break;
-        }
-        search_prev = search;
-        search = search->next;
-    }
 }
 
 /* create a new thread */
