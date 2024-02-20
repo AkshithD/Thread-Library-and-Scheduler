@@ -221,6 +221,9 @@ int worker_join(worker_t thread, void **value_ptr)
     // - wait for a specific thread to terminate
     // - if value_ptr is provided, retrieve return value from joining thread
     // - de-allocate any dynamic memory created by the joining thread
+    if (thread == NULL || thread < 1 || thread > All_threads.used) {
+        return -1; // invalid thread ID
+    }
     Node *target_thread = All_threads.array[thread - 1];
     if (target_thread == NULL) {
         return -1; // Indicate that the thread does not exist
