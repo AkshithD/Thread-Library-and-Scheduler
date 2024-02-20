@@ -54,6 +54,22 @@ void insert_thread_to_map(Node *inserting_thread) {
     inserting_thread->TCB->thread_id = All_threads.used++; // Assign the thread ID as the current used count
 }
 
+/* Timer interrupt handler */
+static void timer_interrupt_handler(int sig)
+{
+    // - save the context of the current thread
+    // - context switch to the scheduler
+    if (current_thread != NULL) {
+        current_thread->TCB->thread_status = READY;
+        enqueue_to_ready_queue(current_thread);
+    }
+    // Switch to the scheduler context to shedule()
+    if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
+        perror("swapcontext");
+        exit(EXIT_FAILURE);
+    }
+}
+
 /* Timer functions */
 void init_timer() {
     // Set up the signal handler
@@ -157,7 +173,6 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
 	if (stack == NULL){
 		return -1;
 	}
-
     new_context->uc_link = NULL;
     new_context->uc_stack.ss_sp = stack;
     new_context->uc_stack.ss_size = STACK_SIZE;
@@ -174,6 +189,14 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     *thread = TCB_stuff->thread_id;
     // Add the new thread to the queue
     enqueue_to_ready_queue(new_thread);
+
+    // If the current thread is NULL, then we need to start the scheduler
+    if (current_thread == NULL){
+        if (swapcontext(&ready_queue->context, &current_thread->TCB->thread_context) < 0) {
+            perror("swapcontext");
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -266,14 +289,18 @@ int worker_mutex_lock(worker_mutex_t *mutex)
     // - if acquiring mutex fails, push current thread into block list and
     // context switch to the scheduler thread
     // Attempt to acquire the lock atomically
-    if (__sync_lock_test_and_set(&(mutex->lock), 1) == 0) {
+    if (mutex->owner == current_thread->TCB->thread_id) {
+        return 0; // Indicate that the calling thread already owns the mutex
+    }
+    if (__sync_lock_test_and_set(&(mutex->lock), 1) == 0 && mutex->owner == -1) {
+        mutex->owner = current_thread->TCB->thread_id;
         // Lock acquired successfully
         return 0;
     }
     // Lock is already held, so block the current thread
     current_thread->TCB->thread_status = BLOCKED;
     // Add the calling thread to the blocked queue
-    current_thread->next = NULL;
+    current_thread->next = NULL; //WARNING: this is a potential bug
     current_thread->type = QUEUE_TYPE_MUTEX_BLOCK;
     if (mutex->wait_queue_head == NULL) {
         mutex->wait_queue_head = mutex->wait_queue_tail = current_thread;
@@ -295,7 +322,11 @@ int worker_mutex_unlock(worker_mutex_t *mutex)
     // - release mutex and make it available again.
     // - put one or more threads in block list to run queue
     // so that they could compete for mutex later.
+    if (mutex->owner != current_thread->TCB->thread_id) {
+        return -1; // Indicate that the calling thread does not own the mutex
+    }
     __sync_lock_release(&(mutex->lock));
+    mutex->owner = -1;
     // If there are threads waiting for the mutex, unblock one of them
     if (mutex->wait_queue_head != NULL) {
         Node *unblocked_thread = mutex->wait_queue_head;
@@ -313,27 +344,14 @@ int worker_mutex_destroy(worker_mutex_t *mutex)
     if (mutex->wait_queue_head != NULL) {
         return -1; // Indicate that the mutex cannot be destroyed because it has waiting threads
     }
+    if (mutex->owner != -1) {
+        return -1; // Indicate that the mutex cannot be destroyed because it is locked
+    }
     if (mutex->lock != 0) {
         return -1; // Indicate that the mutex cannot be destroyed because it is locked
     }
     return 0;
 };
-
-/* Timer interrupt handler */
-static void timer_interrupt_handler(int sig)
-{
-    // - save the context of the current thread
-    // - context switch to the scheduler
-    if (current_thread != NULL) {
-        current_thread->TCB->thread_status = READY;
-        enqueue_to_ready_queue(current_thread);
-    }
-    // Switch to the scheduler context to shedule()
-    if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
-        perror("swapcontext");
-        exit(EXIT_FAILURE);
-    }
-}
 
 /* scheduler */
 static void schedule()
@@ -353,12 +371,11 @@ static void schedule()
     // Choose MLFQ
     
 #endif
-
+    reset_timer();
 // save the context of the current thread
     getcontext(&ready_queue->context);
     makecontext(&ready_queue->context, (void (*)())schedule, 0);
     // context switch to the next thread
-    reset_timer();
     setcontext(&current_thread->TCB->thread_context);
 }
 
@@ -374,7 +391,6 @@ static void sched_rr()
     if (ready_queue->ready_queue_head == NULL) {
         ready_queue->ready_queue_tail = NULL;
     }
-    current_thread->type = QUEUE_TYPE_READY;
     current_thread->next = NULL;
     current_thread->TCB->thread_status = RUNNING;
 }

@@ -28,7 +28,7 @@ typedef struct TCB
 {
     /* add important states in a thread control block */
     worker_t thread_id;       // Thread ID
-    int thread_status;        // Thread status (e.g., running, waiting, terminated)
+    ThreadState thread_status;       // Thread status (e.g., running, waiting, terminated)
     ucontext_t thread_context; // Thread context (e.g., register state)
     void *thread_stack;       // Thread stack pointer
     void *thread_return;      // Thread return value
