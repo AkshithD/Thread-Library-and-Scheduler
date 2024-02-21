@@ -43,7 +43,7 @@ void insert_thread_to_map(Node *inserting_thread) {
     inserting_thread->TCB->thread_id = All_threads.used++; // Assign the thread ID as the current used count
     num_active_threads++; // Increment the number of active threads
 }
-
+void enqueue_to_ready_queue();
 /* Timer interrupt handler */
 static void timer_interrupt_handler(int sig)
 {
@@ -75,6 +75,17 @@ void init_timer() {
 void reset_timer() {
     setitimer(ITIMER_PROF, &timer, NULL);
 }
+
+void stop_timer() {
+    timer.it_value.tv_sec = 0;
+    timer.it_value.tv_usec = 0;
+    timer.it_interval.tv_sec = 0;
+    timer.it_interval.tv_usec = 0;
+    setitimer(ITIMER_PROF, &timer, NULL); // Stop the timer
+}
+
+// declare the scheduler function
+static void schedule();
 
 void initialize_scheduler() {
     ready_queue = (Scheduler *)malloc(sizeof(Scheduler));
@@ -172,6 +183,7 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
 
     TCB_stuff->thread_context = *new_context;
     TCB_stuff->thread_stack = stack;
+    TCB_stuff->waiting_thread = -1;
 
     new_thread->next = NULL;
     new_thread->type = QUEUE_TYPE_READY;
@@ -198,6 +210,7 @@ int worker_yield()
     current_thread->TCB->thread_status = READY;
     enqueue_to_ready_queue(current_thread);
     // Swap context to the scheduler, saving the current context for later
+    stop_timer();
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
         perror("swapcontext");
         return -1;
@@ -205,7 +218,8 @@ int worker_yield()
     return 0;
 };
 
-void delete_TCB(Node *thread) {          
+void delete_TCB(Node *thread) {
+    thread->TCB->thread_id = -1;       
     free(thread->TCB->thread_stack);
     free(thread->TCB);
 }
@@ -218,15 +232,15 @@ void worker_exit(void *value_ptr)
     current_thread->TCB->thread_status = TERMINATED;
     current_thread->TCB->thread_return = value_ptr;
     current_thread->next = NULL;
-    current_thread->type = NULL;
 
-    if (current_thread->TCB->waiting_thread != NULL) {
+    if (current_thread->TCB->waiting_thread != -1) {
         current_thread->freed = false;
     }else{
         current_thread->freed = true;
         num_active_threads--;
         delete_TCB(current_thread); // If the thread is not waiting for another thread, free it now
     }
+    stop_timer();
     // Switch to the scheduler context to continue with another thread
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
         perror("swapcontext");
@@ -245,7 +259,7 @@ int worker_join(worker_t thread, void **value_ptr)
     // - wait for a specific thread to terminate
     // - if value_ptr is provided, retrieve return value from joining thread
     // - de-allocate any dynamic memory created by the joining thread
-    if (thread == NULL || thread < 1 || thread > All_threads.used) {
+    if (thread == -1 || thread < 1 || thread > All_threads.used) {
         return -1; // invalid thread ID
     }
     if (current_thread->TCB->thread_id == thread) {
@@ -255,10 +269,11 @@ int worker_join(worker_t thread, void **value_ptr)
     if (target_thread == NULL) {
         return -1; // Indicate that the thread does not exist
     }
-    target_thread->TCB->waiting_thread = current_thread;
+    target_thread->TCB->waiting_thread = current_thread->TCB->thread_id;
     while (target_thread->TCB->thread_status != TERMINATED) { //potential infinite loop
         current_thread->TCB->thread_status = READY;
         // Switch to the scheduler context to block the current thread and continue with another thread
+        stop_timer();
         if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
             perror("swapcontext");
             return -1;
@@ -318,6 +333,7 @@ int worker_mutex_lock(worker_mutex_t *mutex)
         mutex->wait_queue_tail->next = current_thread;
         mutex->wait_queue_tail = current_thread;
     }
+    stop_timer();
     // Switch to scheduler context to block the current thread and continue with another thread
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
         perror("swapcontext");
@@ -365,7 +381,7 @@ int worker_mutex_destroy(worker_mutex_t *mutex)
     }
     return 0;
 };
-
+static void sched_rr();
 /* scheduler */
 static void schedule()
 {
@@ -385,8 +401,6 @@ static void schedule()
             }
             free(All_threads.array);
             exit(EXIT_SUCCESS);
-        }else{
-
         }
     }
 #else
@@ -406,7 +420,8 @@ static void sched_rr()
     // - your own implementation of RR
     // (feel free to modify arguments and return types)
     if (ready_queue->ready_queue_head == NULL) {
-        return NULL;
+        current_thread = NULL;
+        return;
     }
     current_thread = ready_queue->ready_queue_head;
     ready_queue->ready_queue_head = current_thread->next;
