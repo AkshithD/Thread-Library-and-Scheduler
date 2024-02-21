@@ -14,18 +14,6 @@
 #define QUANTUM 10 * 1000
 #define SCHED_STACK_SIZE 16 * 1024
 
-typedef struct {
-    Node* ready_queue_head; // Head of the ready queue
-    Node* ready_queue_tail; // Tail of the ready queue, for efficient enqueue
-    ucontext_t context;      // Scheduler context
-} Scheduler;
-
-typedef struct {
-    Node** array; // Array of threads
-    size_t used;   // Number of threads currently in use
-    size_t size;   // Current allocated size of the array
-}ArrayList;
-
 // INITIALIZE ALL YOUR OTHER VARIABLES HERE
 int init_scheduler_done = 0;
 Scheduler *ready_queue;
@@ -33,6 +21,7 @@ Node *current_thread;
 ArrayList All_threads;
 struct itimerval timer;
 struct sigaction sa;
+int num_active_threads = 0;
 
 void init_all_threads_map() {
     All_threads.array = malloc(sizeof(Node*) * 100);
@@ -52,6 +41,7 @@ void insert_thread_to_map(Node *inserting_thread) {
     }
     All_threads.array[All_threads.used] = inserting_thread; // Insert the new thread and increment the used count
     inserting_thread->TCB->thread_id = All_threads.used++; // Assign the thread ID as the current used count
+    num_active_threads++; // Increment the number of active threads
 }
 
 /* Timer interrupt handler */
@@ -189,7 +179,6 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     *thread = TCB_stuff->thread_id;
     // Add the new thread to the queue
     enqueue_to_ready_queue(new_thread);
-
     // If the current thread is NULL, then we need to start the scheduler
     if (current_thread == NULL){
         if (swapcontext(&ready_queue->context, &current_thread->TCB->thread_context) < 0) {
@@ -216,10 +205,9 @@ int worker_yield()
     return 0;
 };
 
-void delete_thread(Node *thread) {
+void delete_TCB(Node *thread) {          
     free(thread->TCB->thread_stack);
     free(thread->TCB);
-    free(thread);
 }
 
 /* terminate a thread */
@@ -231,6 +219,14 @@ void worker_exit(void *value_ptr)
     current_thread->TCB->thread_return = value_ptr;
     current_thread->next = NULL;
     current_thread->type = NULL;
+
+    if (current_thread->TCB->waiting_thread != NULL) {
+        current_thread->freed = false;
+    }else{
+        current_thread->freed = true;
+        num_active_threads--;
+        delete_TCB(current_thread); // If the thread is not waiting for another thread, free it now
+    }
     // Switch to the scheduler context to continue with another thread
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
         perror("swapcontext");
@@ -259,6 +255,7 @@ int worker_join(worker_t thread, void **value_ptr)
     if (target_thread == NULL) {
         return -1; // Indicate that the thread does not exist
     }
+    target_thread->TCB->waiting_thread = current_thread;
     while (target_thread->TCB->thread_status != TERMINATED) { //potential infinite loop
         current_thread->TCB->thread_status = READY;
         // Switch to the scheduler context to block the current thread and continue with another thread
@@ -269,6 +266,11 @@ int worker_join(worker_t thread, void **value_ptr)
     }
     if (value_ptr != NULL) {
         *value_ptr = target_thread->TCB->thread_return;
+    }
+    if (!target_thread->freed) { // If the thread has not been freed, free it now
+        target_thread->freed = true;
+        num_active_threads--;
+        delete_TCB(target_thread);
     }
     return 0; // Success
 };
@@ -376,7 +378,16 @@ static void schedule()
 #ifndef MLFQ
     sched_rr();
     if (current_thread == NULL) {
-        return; // idk what to do here
+        if (num_active_threads == 0) {
+            free_scheduler();
+            for (int i = 0; i < All_threads.used; i++) {
+                free(All_threads.array[i]);
+            }
+            free(All_threads.array);
+            exit(EXIT_SUCCESS);
+        }else{
+
+        }
     }
 #else
     // Choose MLFQ
