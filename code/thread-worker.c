@@ -238,6 +238,11 @@ void worker_exit(void *value_ptr)
     }
 }
 
+void free_scheduler() {
+    free(ready_queue->context.uc_stack.ss_sp);
+    free(ready_queue);
+}
+
 /* Wait for thread termination */
 int worker_join(worker_t thread, void **value_ptr)
 {
@@ -247,12 +252,15 @@ int worker_join(worker_t thread, void **value_ptr)
     if (thread == NULL || thread < 1 || thread > All_threads.used) {
         return -1; // invalid thread ID
     }
+    if (current_thread->TCB->thread_id == thread) {
+        return -1; // Indicate that the calling thread cannot join itself
+    }
     Node *target_thread = All_threads.array[thread - 1];
     if (target_thread == NULL) {
         return -1; // Indicate that the thread does not exist
     }
     while (target_thread->TCB->thread_status != TERMINATED) { //potential infinite loop
-        current_thread->TCB->thread_status = BLOCKED;
+        current_thread->TCB->thread_status = READY;
         // Switch to the scheduler context to block the current thread and continue with another thread
         if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
             perror("swapcontext");
@@ -331,6 +339,9 @@ int worker_mutex_unlock(worker_mutex_t *mutex)
     if (mutex->wait_queue_head != NULL) {
         Node *unblocked_thread = mutex->wait_queue_head;
         mutex->wait_queue_head = unblocked_thread->next;
+        if (mutex->wait_queue_head == NULL) {
+            mutex->wait_queue_tail = NULL;
+        }
         enqueue_to_ready_queue(unblocked_thread);
     }
     return 0;
