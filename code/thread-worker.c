@@ -192,12 +192,20 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     // Add the new thread to the queue
     enqueue_to_ready_queue(new_thread);
     // If the current thread is NULL, then we need to start the scheduler
+    printf("Thread %d created\n", TCB_stuff->thread_id);
     if (current_thread == NULL){
-        if (swapcontext(&ready_queue->context, &current_thread->TCB->thread_context) < 0) {
+        //get main benchmark thread
+        ucontext_t main_context;
+        if (getcontext(&main_context) == -1) {
+            perror("getcontext");
+            return -1;
+        }
+        if (swapcontext(&main_context, &ready_queue->context) < 0) {
             perror("swapcontext");
             return -1;
         }
     }
+    printf("Thread %d is running\n", current_thread->TCB->thread_id);
     return 0;
 }
 
@@ -401,6 +409,10 @@ static void schedule()
             }
             free(All_threads.array);
             exit(EXIT_SUCCESS);
+        }
+        else{
+            perror("No active threads");
+            exit(EXIT_FAILURE);
         }
     }
 #else
