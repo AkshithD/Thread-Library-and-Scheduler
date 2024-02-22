@@ -215,7 +215,8 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     // Add the new thread to the queue
     enqueue_to_ready_queue(new_thread);
     printf("Thread %d created\n", new_thread->TCB->thread_id);
-    setcontext(&ready_queue->context);
+    //swap context from main context to ready queue
+    swapcontext(&main_thread->TCB->thread_context, &ready_queue->context);
     return 0;
 }
 
