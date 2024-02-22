@@ -25,7 +25,6 @@ typedef struct TCB
     ucontext_t thread_context; // Thread context (e.g., register state)
     void *thread_stack;       // Thread stack pointer
     void *thread_return;      // Thread return value
-    worker_t waiting_thread;
     // Thread priority (e.g., for scheduling)
     // Add more states as needed...
 

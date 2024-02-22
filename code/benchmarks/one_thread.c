@@ -4,7 +4,6 @@
 
 void dummy_work(void *arg)
 {
-    printf("Thread running\n");
     int i = 0;
     int j = 0;
     int n = *((int *)arg);
@@ -28,11 +27,10 @@ int main(int argc, char **argv)
 
     int id = 1;
     worker_create(&thread, NULL, &dummy_work, &id);
-
+    
     printf("Main thread waiting\n");
     worker_join(thread, NULL);
     printf("Main thread resume\n");
-
     printf("Main thread exit\n");
     return 0;
 }

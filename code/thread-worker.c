@@ -22,10 +22,11 @@ ArrayList All_threads;
 struct itimerval timer;
 struct sigaction sa;
 int num_active_threads = 0;
+Node *main_thread;// store the main thread
 
 void init_all_threads_map() {
     All_threads.array = malloc(sizeof(Node*) * 100);
-    All_threads.used = 0;
+    All_threads.used = 1;
     All_threads.size = 100;
     if (All_threads.array == NULL) {
         perror("Failed to allocate TCB array");
@@ -88,6 +89,7 @@ void stop_timer() {
 static void schedule();
 
 void initialize_scheduler() {
+
     ready_queue = (Scheduler *)malloc(sizeof(Scheduler));
     if (ready_queue == NULL) {
         // Handle memory allocation failure
@@ -148,7 +150,32 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     // - make it ready for the execution.
 
     if (init_scheduler_done == 0) {
+        //initialize the main thread
+        main_thread = (Node *)malloc(sizeof(Node));
+        if (main_thread == NULL) {
+            perror("Failed to allocate main thread");
+            exit(EXIT_FAILURE);
+        }
+        main_thread->TCB = (tcb *)malloc(sizeof(tcb));
+        if (main_thread->TCB == NULL) {
+            perror("Failed to allocate main thread TCB");
+            exit(EXIT_FAILURE);
+        }
+        if(getcontext(&main_thread->TCB->thread_context) < 0) {
+            perror("getcontext");
+            exit(EXIT_FAILURE);
+        }
+        main_thread->TCB->thread_id = 0;
+        main_thread->TCB->thread_status = READY;
+        main_thread->TCB->thread_stack = main_thread ->TCB->thread_context.uc_stack.ss_sp;
+        main_thread->TCB->thread_return = NULL;
+        main_thread->next = NULL;
+        main_thread->type = QUEUE_TYPE_READY;
+        current_thread = main_thread;
+        insert_thread_to_map(main_thread);
         initialize_scheduler();
+        ready_queue->ready_queue_head = main_thread;
+        ready_queue->ready_queue_tail = main_thread;
         init_scheduler_done = 1;
     }
 
@@ -181,20 +208,14 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     makecontext(&new_thread->TCB->thread_context, (void *)(*function), 1, arg);
 
     new_thread->TCB->thread_stack = stack;
-    new_thread->TCB->waiting_thread = -1;
     new_thread->next = NULL;
     new_thread->type = QUEUE_TYPE_READY;
     insert_thread_to_map(new_thread);
     *thread = new_thread->TCB->thread_id;
     // Add the new thread to the queue
     enqueue_to_ready_queue(new_thread);
-    // If the current thread is NULL, then we need to start the scheduler
     printf("Thread %d created\n", new_thread->TCB->thread_id);
-    if (current_thread == NULL){
-        ready_queue->ready_queue_head = new_thread;
-        ready_queue->ready_queue_tail = new_thread;
-        setcontext(&ready_queue->context);
-    }
+    setcontext(&ready_queue->context);
     return 0;
 }
 
@@ -231,16 +252,8 @@ void worker_exit(void *value_ptr)
     current_thread->TCB->thread_return = value_ptr;
     current_thread->next = NULL;
     printf("exit2\n ");
-
-    if (current_thread->TCB->waiting_thread != -1) {
-        current_thread->freed = false;
-    }else{
-        current_thread->freed = true;
-        num_active_threads--;
-        delete_TCB(current_thread); // If the thread is not waiting for another thread, free it now
-    }
-    printf("exit3\n ");
     stop_timer();
+    num_active_threads--;
     // Switch to the scheduler context to continue with another thread
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
         perror("swapcontext");
@@ -272,7 +285,6 @@ int worker_join(worker_t thread, void **value_ptr)
         return -1; // Indicate that the thread does not exist
     }
     printf("join3\n ");
-    target_thread->TCB->waiting_thread = current_thread->TCB->thread_id;
     while (target_thread->TCB->thread_status != TERMINATED) { //potential infinite loop
         current_thread->TCB->thread_status = READY;
         // Switch to the scheduler context to block the current thread and continue with another thread
@@ -286,12 +298,7 @@ int worker_join(worker_t thread, void **value_ptr)
     if (value_ptr != NULL) {
         *value_ptr = target_thread->TCB->thread_return;
     }
-    printf("join5\n ");
-    if (!target_thread->freed) { // If the thread has not been freed, free it now
-        target_thread->freed = true;
-        num_active_threads--;
-        delete_TCB(target_thread);
-    }
+    delete_TCB(target_thread);
     printf("join5\n ");
     return 0; // Success
 };
@@ -399,20 +406,16 @@ static void schedule()
 // - schedule policy
 #ifndef MLFQ
     sched_rr();
-    if (current_thread == NULL) {
-        printf("No active threads\n");
-        if (num_active_threads == 0) {
-            free_scheduler();
-            for (int i = 0; i < All_threads.used; i++) {
-                free(All_threads.array[i]);
-            }
-            free(All_threads.array);
-            exit(EXIT_SUCCESS);
+    if (num_active_threads == 1) {
+        free_scheduler();
+        for (int i = 0; i < All_threads.used; i++) {
+            free(All_threads.array[i]);
         }
-        else{
-            perror("No active threads");
-            exit(EXIT_FAILURE);
-        }
+        free(All_threads.array);
+        free(main_thread->TCB);
+        free(main_thread);
+        printf("No active threads success\n");
+        exit(EXIT_SUCCESS);
     }
 #else
     // Choose MLFQ
@@ -426,7 +429,6 @@ static void schedule()
     // context switch to the next thread
     printf("chill\n");
     // see if the set context function actually sets the context to the thing we are setting it to
-
     setcontext(&current_thread->TCB->thread_context);
 }
 

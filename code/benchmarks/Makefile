@@ -5,6 +5,7 @@ all:: clean one_thread multiple_threads multiple_threads_yield multiple_threads_
 
 one_thread:
 	$(CC) $(CFLAGS) -o one_thread one_thread.c -L../ -lthread-worker
+	mv one_thread bin/
 
 multiple_threads:
 	$(CC) $(CFLAGS) -o multiple_threads multiple_threads.c -L../ -lthread-worker
