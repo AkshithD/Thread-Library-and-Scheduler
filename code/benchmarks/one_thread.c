@@ -4,6 +4,7 @@
 
 void dummy_work(void *arg)
 {
+    printf("Thread running\n");
     int i = 0;
     int j = 0;
     int n = *((int *)arg);

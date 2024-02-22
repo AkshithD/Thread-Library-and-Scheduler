@@ -162,10 +162,8 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
         return -1;
     }
     new_thread->TCB = (tcb *)malloc(sizeof(tcb));
-    tcb* TCB_stuff = new_thread-> TCB;
-    TCB_stuff->thread_status = READY;
-    ucontext_t *new_context = &TCB_stuff->thread_context;
-    if (getcontext(new_context) < 0) {
+    new_thread->TCB->thread_status = READY;
+    if (getcontext(&new_thread->TCB->thread_context) < 0) {
         return -1;
     }
     // Allocate space for stack
@@ -174,38 +172,29 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
 	if (stack == NULL){
 		return -1;
 	}
-    new_context->uc_link = NULL;
-    new_context->uc_stack.ss_sp = stack;
-    new_context->uc_stack.ss_size = STACK_SIZE;
-    new_context->uc_stack.ss_flags = 0;
+    
+    new_thread->TCB->thread_context.uc_link = NULL;
+    new_thread->TCB->thread_context.uc_stack.ss_sp = stack;
+    new_thread->TCB->thread_context.uc_stack.ss_size = STACK_SIZE;
+    new_thread->TCB->thread_context.uc_stack.ss_flags = 0;
+    //setup the context for the TCB_stuff
+    makecontext(&new_thread->TCB->thread_context, (void *)(*function), 1, arg);
 
-    makecontext(new_context, (void *)&function, 1, arg);
-
-    TCB_stuff->thread_context = *new_context;
-    TCB_stuff->thread_stack = stack;
-    TCB_stuff->waiting_thread = -1;
-
+    new_thread->TCB->thread_stack = stack;
+    new_thread->TCB->waiting_thread = -1;
     new_thread->next = NULL;
     new_thread->type = QUEUE_TYPE_READY;
     insert_thread_to_map(new_thread);
-    *thread = TCB_stuff->thread_id;
+    *thread = new_thread->TCB->thread_id;
     // Add the new thread to the queue
     enqueue_to_ready_queue(new_thread);
     // If the current thread is NULL, then we need to start the scheduler
-    printf("Thread %d created\n", TCB_stuff->thread_id);
+    printf("Thread %d created\n", new_thread->TCB->thread_id);
     if (current_thread == NULL){
-        //get main benchmark thread
-        ucontext_t main_context;
-        if (getcontext(&main_context) == -1) {
-            perror("getcontext");
-            return -1;
-        }
-        if (swapcontext(&main_context, &ready_queue->context) < 0) {
-            perror("swapcontext");
-            return -1;
-        }
+        ready_queue->ready_queue_head = new_thread;
+        ready_queue->ready_queue_tail = new_thread;
+        setcontext(&ready_queue->context);
     }
-    printf("Thread %d is running\n", current_thread->TCB->thread_id);
     return 0;
 }
 
@@ -237,9 +226,11 @@ void worker_exit(void *value_ptr)
 {
     // - if value_ptr is provided, save return value
     // - de-allocate any dynamic memory created when starting this thread (could be done here or elsewhere)
+    printf("exit1\n ");
     current_thread->TCB->thread_status = TERMINATED;
     current_thread->TCB->thread_return = value_ptr;
     current_thread->next = NULL;
+    printf("exit2\n ");
 
     if (current_thread->TCB->waiting_thread != -1) {
         current_thread->freed = false;
@@ -248,6 +239,7 @@ void worker_exit(void *value_ptr)
         num_active_threads--;
         delete_TCB(current_thread); // If the thread is not waiting for another thread, free it now
     }
+    printf("exit3\n ");
     stop_timer();
     // Switch to the scheduler context to continue with another thread
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
@@ -267,16 +259,19 @@ int worker_join(worker_t thread, void **value_ptr)
     // - wait for a specific thread to terminate
     // - if value_ptr is provided, retrieve return value from joining thread
     // - de-allocate any dynamic memory created by the joining thread
+    printf("join1\n ");
     if (thread == -1 || thread < 1 || thread > All_threads.used) {
         return -1; // invalid thread ID
     }
     if (current_thread->TCB->thread_id == thread) {
         return -1; // Indicate that the calling thread cannot join itself
     }
+    printf("join2\n ");
     Node *target_thread = All_threads.array[thread - 1];
     if (target_thread == NULL) {
         return -1; // Indicate that the thread does not exist
     }
+    printf("join3\n ");
     target_thread->TCB->waiting_thread = current_thread->TCB->thread_id;
     while (target_thread->TCB->thread_status != TERMINATED) { //potential infinite loop
         current_thread->TCB->thread_status = READY;
@@ -287,14 +282,17 @@ int worker_join(worker_t thread, void **value_ptr)
             return -1;
         }
     }
+    printf("join4\n ");
     if (value_ptr != NULL) {
         *value_ptr = target_thread->TCB->thread_return;
     }
+    printf("join5\n ");
     if (!target_thread->freed) { // If the thread has not been freed, free it now
         target_thread->freed = true;
         num_active_threads--;
         delete_TCB(target_thread);
     }
+    printf("join5\n ");
     return 0; // Success
 };
 
@@ -397,11 +395,12 @@ static void schedule()
 // should be contexted switched from a thread context to this
 // schedule() function
 // - invoke scheduling algorithms according to the policy (RR or MLFQ)
-
+    printf("Scheduling\n");
 // - schedule policy
 #ifndef MLFQ
     sched_rr();
     if (current_thread == NULL) {
+        printf("No active threads\n");
         if (num_active_threads == 0) {
             free_scheduler();
             for (int i = 0; i < All_threads.used; i++) {
@@ -421,9 +420,13 @@ static void schedule()
 #endif
     reset_timer();
 // save the context of the current thread
+    printf("Scheduling to thread %d\n", current_thread->TCB->thread_id);
     getcontext(&ready_queue->context);
     makecontext(&ready_queue->context, (void (*)())schedule, 0);
     // context switch to the next thread
+    printf("chill\n");
+    // see if the set context function actually sets the context to the thing we are setting it to
+
     setcontext(&current_thread->TCB->thread_context);
 }
 
