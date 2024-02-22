@@ -23,6 +23,8 @@ struct itimerval timer;
 struct sigaction sa;
 int num_active_threads = 0;
 Node *main_thread;// store the main thread
+ucontext_t finished_context;
+int init_main_thread_schedule = 0;
 
 void init_all_threads_map() {
     All_threads.array = malloc(sizeof(Node*) * 100);
@@ -51,6 +53,7 @@ static void timer_interrupt_handler(int sig)
     // - save the context of the current thread
     // - context switch to the scheduler
     if (current_thread != NULL) {
+        printf("Thread %d interrupted\n", current_thread->TCB->thread_id);
         current_thread->TCB->thread_status = READY;
         enqueue_to_ready_queue(current_thread);
     }
@@ -138,6 +141,20 @@ void dequeue_from_ready_queue() {
     current_thread->next = NULL;
     current_thread->TCB->thread_status = RUNNING;
 }
+void free_scheduler();
+void main_thread_exit() {
+    free_scheduler();
+    for (int i = 0; i < All_threads.used; i++) {
+        free(All_threads.array[i]->TCB->thread_stack);
+        free(All_threads.array[i]->TCB);
+        free(All_threads.array[i]);
+    }
+    free(All_threads.array);
+    free(main_thread->TCB);
+    free(main_thread);
+    free(finished_context.uc_stack.ss_sp);
+    exit(EXIT_SUCCESS);
+}
 
 /* create a new thread */
 int worker_create(worker_t *thread, pthread_attr_t *attr,
@@ -176,6 +193,12 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
         initialize_scheduler();
         ready_queue->ready_queue_head = main_thread;
         ready_queue->ready_queue_tail = main_thread;
+        // set up finished context
+        getcontext(&finished_context);
+        finished_context.uc_stack.ss_sp = malloc(STACK_SIZE);
+        finished_context.uc_stack.ss_size = STACK_SIZE;
+        finished_context.uc_link = NULL;
+        makecontext(&finished_context, (void *) &main_thread_exit, 0);
         init_scheduler_done = 1;
     }
 
@@ -200,7 +223,7 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
 		return -1;
 	}
     
-    new_thread->TCB->thread_context.uc_link = NULL;
+    new_thread->TCB->thread_context.uc_link = &finished_context;
     new_thread->TCB->thread_context.uc_stack.ss_sp = stack;
     new_thread->TCB->thread_context.uc_stack.ss_size = STACK_SIZE;
     new_thread->TCB->thread_context.uc_stack.ss_flags = 0;
@@ -250,8 +273,12 @@ void worker_exit(void *value_ptr)
     // - de-allocate any dynamic memory created when starting this thread (could be done here or elsewhere)
     printf("exit1\n ");
     current_thread->TCB->thread_status = TERMINATED;
+    //change the status of the thread as terminated in the map array that we created
+    All_threads.array[current_thread->TCB->thread_id - 1]->TCB->thread_status = TERMINATED;
     current_thread->TCB->thread_return = value_ptr;
+    All_threads.array[current_thread->TCB->thread_id - 1]->TCB->thread_return = value_ptr;
     current_thread->next = NULL;
+    All_threads.array[current_thread->TCB->thread_id - 1]->next = NULL;
     printf("exit2\n ");
     stop_timer();
     num_active_threads--;
@@ -281,15 +308,16 @@ int worker_join(worker_t thread, void **value_ptr)
         return -1; // Indicate that the calling thread cannot join itself
     }
     printf("join2\n ");
-    Node *target_thread = All_threads.array[thread - 1];
+    Node *target_thread = All_threads.array[thread];
+    printf("threadid %d\n ", target_thread->TCB->thread_id);
     if (target_thread == NULL) {
         return -1; // Indicate that the thread does not exist
     }
-    printf("join3\n ");
-    while (target_thread->TCB->thread_status != TERMINATED) { //potential infinite loop
+    while (target_thread->TCB->thread_status != TERMINATED) { 
         current_thread->TCB->thread_status = READY;
         // Switch to the scheduler context to block the current thread and continue with another thread
         stop_timer();
+        enqueue_to_ready_queue(current_thread);
         if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
             perror("swapcontext");
             return -1;
@@ -299,7 +327,6 @@ int worker_join(worker_t thread, void **value_ptr)
     if (value_ptr != NULL) {
         *value_ptr = target_thread->TCB->thread_return;
     }
-    delete_TCB(target_thread);
     printf("join5\n ");
     return 0; // Success
 };
@@ -403,32 +430,28 @@ static void schedule()
 // should be contexted switched from a thread context to this
 // schedule() function
 // - invoke scheduling algorithms according to the policy (RR or MLFQ)
-    printf("Scheduling\n");
 // - schedule policy
 #ifndef MLFQ
     sched_rr();
-    if (num_active_threads == 1) {
-        free_scheduler();
-        for (int i = 0; i < All_threads.used; i++) {
-            free(All_threads.array[i]);
-        }
-        free(All_threads.array);
-        free(main_thread->TCB);
-        free(main_thread);
-        printf("No active threads success\n");
-        exit(EXIT_SUCCESS);
+    if (current_thread == NULL) {
+        printf("No more threads to schedule\n");
+        main_thread_exit();
+    }else{
+        printf("Thread %d running\n", current_thread->TCB->thread_id);
     }
 #else
     // Choose MLFQ
     
 #endif
+    if (init_main_thread_schedule == 0) {
+        init_main_thread_schedule = 1;
+        enqueue_to_ready_queue(main_thread);
+    }
     reset_timer();
 // save the context of the current thread
-    printf("Scheduling to thread %d\n", current_thread->TCB->thread_id);
     getcontext(&ready_queue->context);
     makecontext(&ready_queue->context, (void (*)())schedule, 0);
     // context switch to the next thread
-    printf("chill\n");
     // see if the set context function actually sets the context to the thing we are setting it to
     setcontext(&current_thread->TCB->thread_context);
 }
@@ -438,11 +461,13 @@ static void sched_rr()
     // - your own implementation of RR
     // (feel free to modify arguments and return types)
     if (ready_queue->ready_queue_head == NULL) {
+        printf("blaaaaaaa\n");
         current_thread = NULL;
         return;
     }
     current_thread = ready_queue->ready_queue_head;
     ready_queue->ready_queue_head = current_thread->next;
+    printf("Thread %d running!!! NEXT NODE: %d\n", current_thread->TCB->thread_id, ready_queue->ready_queue_head->TCB->thread_id);
     if (ready_queue->ready_queue_head == NULL) {
         ready_queue->ready_queue_tail = NULL;
     }
