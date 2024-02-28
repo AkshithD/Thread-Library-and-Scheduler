@@ -21,14 +21,14 @@ Node *current_thread;
 ArrayList All_threads;
 struct itimerval timer;
 struct sigaction sa;
-int num_active_threads = 0;
 Node *main_thread;// store the main thread
 ucontext_t finished_context;
-int init_main_thread_schedule = 0;
+int creating_thread_started = 0;
+int creating_thread_done = 0;
 
 void init_all_threads_map() {
     All_threads.array = malloc(sizeof(Node*) * 100);
-    All_threads.used = 1;
+    All_threads.used = 0;
     All_threads.size = 100;
     if (All_threads.array == NULL) {
         perror("Failed to allocate TCB array");
@@ -44,7 +44,6 @@ void insert_thread_to_map(Node *inserting_thread) {
     }
     All_threads.array[All_threads.used] = inserting_thread; // Insert the new thread and increment the used count
     inserting_thread->TCB->thread_id = All_threads.used++; // Assign the thread ID as the current used count
-    num_active_threads++; // Increment the number of active threads
 }
 void enqueue_to_ready_queue();
 /* Timer interrupt handler */
@@ -122,8 +121,10 @@ void enqueue_to_ready_queue(Node *new_thread) {
     new_thread->type = QUEUE_TYPE_READY;
     if (ready_queue->ready_queue_head == NULL) {
         ready_queue->ready_queue_head = ready_queue->ready_queue_tail = new_thread;
+        printf("Thread %d enqueued at the head\n", new_thread->TCB->thread_id);
     } else {
         ready_queue->ready_queue_tail->next = new_thread;
+        printf("Thread %d enqueued behind %d\n", new_thread->TCB->thread_id, ready_queue->ready_queue_tail->TCB->thread_id);
         ready_queue->ready_queue_tail = new_thread;
     }
 }
@@ -141,6 +142,15 @@ void dequeue_from_ready_queue() {
     current_thread->next = NULL;
     current_thread->TCB->thread_status = RUNNING;
 }
+
+void print_ready_queue() {
+    Node *temp = ready_queue->ready_queue_head;
+    while (temp != NULL) {
+        printf("Thread %d\n", temp->TCB->thread_id);
+        temp = temp->next;
+    }
+}
+
 void free_scheduler();
 void main_thread_exit() {
     free_scheduler();
@@ -168,6 +178,7 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
 
     if (init_scheduler_done == 0) {
         //initialize the main thread
+        init_all_threads_map();
         main_thread = (Node *)malloc(sizeof(Node));
         if (main_thread == NULL) {
             perror("Failed to allocate main thread");
@@ -182,7 +193,6 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
             perror("getcontext");
             exit(EXIT_FAILURE);
         }
-        main_thread->TCB->thread_id = 0;
         main_thread->TCB->thread_status = READY;
         main_thread->TCB->thread_stack = main_thread ->TCB->thread_context.uc_stack.ss_sp;
         main_thread->TCB->thread_return = NULL;
@@ -201,11 +211,7 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
         makecontext(&finished_context, (void *) &main_thread_exit, 0);
         init_scheduler_done = 1;
     }
-
-    if (All_threads.used == 0) {
-        init_all_threads_map();
-    }
-
+    stop_timer();
     Node *new_thread = (Node *)malloc(sizeof(Node));
     if (new_thread == NULL)
     {
@@ -237,9 +243,10 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     *thread = new_thread->TCB->thread_id;
     // Add the new thread to the queue
     enqueue_to_ready_queue(new_thread);
+    creating_thread_started = 1;
     printf("Thread %d created\n", new_thread->TCB->thread_id);
     //swap context from main context to ready queue
-    swapcontext(&main_thread->TCB->thread_context, &ready_queue->context);
+    swapcontext(&current_thread->TCB->thread_context ,&ready_queue->context);
     return 0;
 }
 
@@ -281,7 +288,6 @@ void worker_exit(void *value_ptr)
     All_threads.array[current_thread->TCB->thread_id - 1]->next = NULL;
     printf("exit2\n ");
     stop_timer();
-    num_active_threads--;
     // Switch to the scheduler context to continue with another thread
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
         perror("swapcontext");
@@ -431,6 +437,7 @@ static void schedule()
 // schedule() function
 // - invoke scheduling algorithms according to the policy (RR or MLFQ)
 // - schedule policy
+    Node *prev = current_thread;
 #ifndef MLFQ
     sched_rr();
     if (current_thread == NULL) {
@@ -443,10 +450,17 @@ static void schedule()
     // Choose MLFQ
     
 #endif
-    if (init_main_thread_schedule == 0) {
-        init_main_thread_schedule = 1;
-        enqueue_to_ready_queue(main_thread);
+    if (creating_thread_done == 1) {
+        printf("creating thread done\n");
+        enqueue_to_ready_queue(prev);
+        creating_thread_done = 0;
+        creating_thread_started = 0;
     }
+    if (creating_thread_started == 1) {
+        printf("creating thread started\n");
+        creating_thread_done = 1;
+    }
+
     reset_timer();
 // save the context of the current thread
     getcontext(&ready_queue->context);
