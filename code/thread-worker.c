@@ -52,7 +52,6 @@ static void timer_interrupt_handler(int sig)
     // - save the context of the current thread
     // - context switch to the scheduler
     if (current_thread != NULL) {
-        printf("Thread %d interrupted\n", current_thread->TCB->thread_id);
         current_thread->TCB->thread_status = READY;
         enqueue_to_ready_queue(current_thread);
     }
@@ -121,10 +120,8 @@ void enqueue_to_ready_queue(Node *new_thread) {
     new_thread->type = QUEUE_TYPE_READY;
     if (ready_queue->ready_queue_head == NULL) {
         ready_queue->ready_queue_head = ready_queue->ready_queue_tail = new_thread;
-        printf("Thread %d enqueued at the head\n", new_thread->TCB->thread_id);
     } else {
         ready_queue->ready_queue_tail->next = new_thread;
-        printf("Thread %d enqueued behind %d\n", new_thread->TCB->thread_id, ready_queue->ready_queue_tail->TCB->thread_id);
         ready_queue->ready_queue_tail = new_thread;
     }
 }
@@ -141,14 +138,6 @@ void dequeue_from_ready_queue() {
     current_thread->type = QUEUE_TYPE_READY;
     current_thread->next = NULL;
     current_thread->TCB->thread_status = RUNNING;
-}
-
-void print_ready_queue() {
-    Node *temp = ready_queue->ready_queue_head;
-    while (temp != NULL) {
-        printf("Thread %d\n", temp->TCB->thread_id);
-        temp = temp->next;
-    }
 }
 
 void free_scheduler();
@@ -201,8 +190,6 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
         current_thread = main_thread;
         insert_thread_to_map(main_thread);
         initialize_scheduler();
-        ready_queue->ready_queue_head = main_thread;
-        ready_queue->ready_queue_tail = main_thread;
         // set up finished context
         getcontext(&finished_context);
         finished_context.uc_stack.ss_sp = malloc(STACK_SIZE);
@@ -243,8 +230,7 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     *thread = new_thread->TCB->thread_id;
     // Add the new thread to the queue
     enqueue_to_ready_queue(new_thread);
-    creating_thread_started = 1;
-    printf("Thread %d created\n", new_thread->TCB->thread_id);
+    creating_thread_done = 1;
     //swap context from main context to ready queue
     swapcontext(&current_thread->TCB->thread_context ,&ready_queue->context);
     return 0;
@@ -278,7 +264,6 @@ void worker_exit(void *value_ptr)
 {
     // - if value_ptr is provided, save return value
     // - de-allocate any dynamic memory created when starting this thread (could be done here or elsewhere)
-    printf("exit1\n ");
     current_thread->TCB->thread_status = TERMINATED;
     //change the status of the thread as terminated in the map array that we created
     All_threads.array[current_thread->TCB->thread_id - 1]->TCB->thread_status = TERMINATED;
@@ -286,7 +271,6 @@ void worker_exit(void *value_ptr)
     All_threads.array[current_thread->TCB->thread_id - 1]->TCB->thread_return = value_ptr;
     current_thread->next = NULL;
     All_threads.array[current_thread->TCB->thread_id - 1]->next = NULL;
-    printf("exit2\n ");
     stop_timer();
     // Switch to the scheduler context to continue with another thread
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
@@ -306,16 +290,13 @@ int worker_join(worker_t thread, void **value_ptr)
     // - wait for a specific thread to terminate
     // - if value_ptr is provided, retrieve return value from joining thread
     // - de-allocate any dynamic memory created by the joining thread
-    printf("join1\n ");
     if (thread == -1 || thread < 1 || thread > All_threads.used) {
         return -1; // invalid thread ID
     }
     if (current_thread->TCB->thread_id == thread) {
         return -1; // Indicate that the calling thread cannot join itself
     }
-    printf("join2\n ");
     Node *target_thread = All_threads.array[thread];
-    printf("threadid %d\n ", target_thread->TCB->thread_id);
     if (target_thread == NULL) {
         return -1; // Indicate that the thread does not exist
     }
@@ -329,11 +310,9 @@ int worker_join(worker_t thread, void **value_ptr)
             return -1;
         }
     }
-    printf("join4\n ");
     if (value_ptr != NULL) {
         *value_ptr = target_thread->TCB->thread_return;
     }
-    printf("join5\n ");
     return 0; // Success
 };
 
@@ -443,22 +422,14 @@ static void schedule()
     if (current_thread == NULL) {
         printf("No more threads to schedule\n");
         main_thread_exit();
-    }else{
-        printf("Thread %d running\n", current_thread->TCB->thread_id);
     }
 #else
     // Choose MLFQ
     
 #endif
     if (creating_thread_done == 1) {
-        printf("creating thread done\n");
         enqueue_to_ready_queue(prev);
         creating_thread_done = 0;
-        creating_thread_started = 0;
-    }
-    if (creating_thread_started == 1) {
-        printf("creating thread started\n");
-        creating_thread_done = 1;
     }
 
     reset_timer();
@@ -481,9 +452,10 @@ static void sched_rr()
     }
     current_thread = ready_queue->ready_queue_head;
     ready_queue->ready_queue_head = current_thread->next;
-    printf("Thread %d running!!! NEXT NODE: %d\n", current_thread->TCB->thread_id, ready_queue->ready_queue_head->TCB->thread_id);
     if (ready_queue->ready_queue_head == NULL) {
         ready_queue->ready_queue_tail = NULL;
+    }else{
+        ready_queue->ready_queue_head = current_thread->next;
     }
     current_thread->next = NULL;
     current_thread->TCB->thread_status = RUNNING;

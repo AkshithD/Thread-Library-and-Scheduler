@@ -58,7 +58,6 @@ int main(int argc, char **argv)
 	{
 		printf("Main thread creating worker thread %d\n", counter[i]);
 		worker_create(&thread[i], NULL, &dummy_work, &counter[i]);
-		printf("Main thread created worker thread %d\n", counter[i]);
 	}
 
 	for (i = 0; i < thread_num; i++)
