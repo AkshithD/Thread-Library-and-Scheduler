@@ -23,7 +23,6 @@ struct itimerval timer;
 struct sigaction sa;
 Node *main_thread;// store the main thread
 ucontext_t finished_context;
-int creating_thread_started = 0;
 int creating_thread_done = 0;
 
 void init_all_threads_map() {
@@ -124,20 +123,6 @@ void enqueue_to_ready_queue(Node *new_thread) {
         ready_queue->ready_queue_tail->next = new_thread;
         ready_queue->ready_queue_tail = new_thread;
     }
-}
-
-void dequeue_from_ready_queue() {
-    if (ready_queue->ready_queue_head == NULL) {
-        return;
-    }
-    current_thread = ready_queue->ready_queue_head;
-    ready_queue->ready_queue_head = current_thread->next;
-    if (ready_queue->ready_queue_head == NULL) {
-        ready_queue->ready_queue_tail = NULL;
-    }
-    current_thread->type = QUEUE_TYPE_READY;
-    current_thread->next = NULL;
-    current_thread->TCB->thread_status = RUNNING;
 }
 
 void free_scheduler();
@@ -266,11 +251,11 @@ void worker_exit(void *value_ptr)
     // - de-allocate any dynamic memory created when starting this thread (could be done here or elsewhere)
     current_thread->TCB->thread_status = TERMINATED;
     //change the status of the thread as terminated in the map array that we created
-    All_threads.array[current_thread->TCB->thread_id - 1]->TCB->thread_status = TERMINATED;
+    All_threads.array[current_thread->TCB->thread_id]->TCB->thread_status = TERMINATED;
     current_thread->TCB->thread_return = value_ptr;
-    All_threads.array[current_thread->TCB->thread_id - 1]->TCB->thread_return = value_ptr;
+    All_threads.array[current_thread->TCB->thread_id]->TCB->thread_return = value_ptr;
     current_thread->next = NULL;
-    All_threads.array[current_thread->TCB->thread_id - 1]->next = NULL;
+    All_threads.array[current_thread->TCB->thread_id]->next = NULL;
     stop_timer();
     // Switch to the scheduler context to continue with another thread
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
@@ -420,7 +405,6 @@ static void schedule()
 #ifndef MLFQ
     sched_rr();
     if (current_thread == NULL) {
-        printf("No more threads to schedule\n");
         main_thread_exit();
     }
 #else
@@ -446,7 +430,6 @@ static void sched_rr()
     // - your own implementation of RR
     // (feel free to modify arguments and return types)
     if (ready_queue->ready_queue_head == NULL) {
-        printf("blaaaaaaa\n");
         current_thread = NULL;
         return;
     }
