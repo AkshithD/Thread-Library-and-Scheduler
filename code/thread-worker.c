@@ -2,6 +2,8 @@
 
 // List all group member's name:
 /*
+ * Akshith Dandemraju
+ * Abhinav Acharya
  */
 // username of iLab: 
 // iLab Server:
@@ -39,6 +41,10 @@ void insert_thread_to_map(Node *inserting_thread) {
     if (All_threads.used == All_threads.size) {
         size_t newSize = All_threads.size * 2;
         All_threads.array = realloc(All_threads.array, sizeof(Node*) * newSize);
+        if (All_threads.array == NULL) {
+            perror("Failed to reallocate TCB array");
+            exit(EXIT_FAILURE);
+        }
         All_threads.size = newSize;
     }
     All_threads.array[All_threads.used] = inserting_thread; // Insert the new thread and increment the used count
@@ -94,13 +100,15 @@ void initialize_scheduler() {
     if (ready_queue == NULL) {
         // Handle memory allocation failure
         perror("Failed to allocate scheduler");
-        exit(1); // Or another appropriate error handling mechanism
+        exit(EXIT_FAILURE);
     }
     ready_queue->ready_queue_head = NULL;
     ready_queue->ready_queue_tail = NULL;
     // Get the current context to modify it into the scheduler's context
-    getcontext(&ready_queue->context);
-
+    if(getcontext(&ready_queue->context) < 0) {
+        perror("getcontext");
+        exit(EXIT_FAILURE);
+    }
     // Set up the scheduler context
     ready_queue->context.uc_stack.ss_sp = malloc(SCHED_STACK_SIZE);
     ready_queue->context.uc_stack.ss_size = SCHED_STACK_SIZE;
@@ -238,24 +246,14 @@ int worker_yield()
     return 0;
 };
 
-void delete_TCB(Node *thread) {
-    thread->TCB->thread_id = -1;       
-    free(thread->TCB->thread_stack);
-    free(thread->TCB);
-}
-
 /* terminate a thread */
 void worker_exit(void *value_ptr)
 {
     // - if value_ptr is provided, save return value
     // - de-allocate any dynamic memory created when starting this thread (could be done here or elsewhere)
     current_thread->TCB->thread_status = TERMINATED;
-    //change the status of the thread as terminated in the map array that we created
-    All_threads.array[current_thread->TCB->thread_id]->TCB->thread_status = TERMINATED;
     current_thread->TCB->thread_return = value_ptr;
-    All_threads.array[current_thread->TCB->thread_id]->TCB->thread_return = value_ptr;
     current_thread->next = NULL;
-    All_threads.array[current_thread->TCB->thread_id]->next = NULL;
     stop_timer();
     // Switch to the scheduler context to continue with another thread
     if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
@@ -328,7 +326,7 @@ int worker_mutex_lock(worker_mutex_t *mutex)
     if (mutex->owner == current_thread->TCB->thread_id) {
         return 0; // Indicate that the calling thread already owns the mutex
     }
-    if (__sync_lock_test_and_set(&(mutex->lock), 1) == 0 && mutex->owner == -1) {
+    if (__sync_lock_test_and_set(&(mutex->lock), 1) == 0) {
         mutex->owner = current_thread->TCB->thread_id;
         // Lock acquired successfully
         return 0;
