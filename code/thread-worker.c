@@ -80,6 +80,10 @@ void init_timer() {
 }
 
 void reset_timer() {
+    timer.it_value.tv_sec = 0;
+    timer.it_value.tv_usec = QUANTUM;
+    timer.it_interval.tv_sec = 0;
+    timer.it_interval.tv_usec = 0;
     setitimer(ITIMER_PROF, &timer, NULL);
 }
 
@@ -344,10 +348,7 @@ int worker_mutex_lock(worker_mutex_t *mutex)
     }
     stop_timer();
     // Switch to scheduler context to block the current thread and continue with another thread
-    if (swapcontext(&current_thread->TCB->thread_context, &ready_queue->context) < 0) {
-        perror("swapcontext");
-        return -1;
-    }
+    setcontext(&ready_queue->context);
     return 0;
 };
 
